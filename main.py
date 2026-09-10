@@ -8,7 +8,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 import qrcode
 
-TOKEN = "8946349098:AAFQKMlUCyl3pFcYC5EEnzDPxlYKKvHMe_8"
+TOKEN = "8946349098:AAFQyl3pFcYC5EEnzDPxlYKKvHMe_8"
 SUPER_ADMIN_ID = 5874144878
 
 # MUHIM: Quyidagi matnga o'z botingizning USERNAME'ini yozib qo'ying (masalan: t.me/SizningBotingizUz_bot)
