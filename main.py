@@ -30,6 +30,7 @@ registered_students = {}
 
 class AdminStates(StatesGroup):
     waiting_for_new_admin_id = State()
+    waiting_for_remove_admin_id = State()  # Adminni o'chirish uchun holat
     waiting_for_student_id = State()
     waiting_for_student_name = State()
     waiting_for_student_course = State()
@@ -71,9 +72,12 @@ def get_admin_keyboard():
             ],
             [
                 types.KeyboardButton(text="➕ Admin qo'shish"),
-                types.KeyboardButton(text="👤 Talaba qo'shish"),
+                types.KeyboardButton(text="🗑 Adminni o'chirish"),  # Yangi tugma
             ],
-            [types.KeyboardButton(text="🗑 Talabani o'chirish")],
+            [
+                types.KeyboardButton(text="👤 Talaba qo'shish"),
+                types.KeyboardButton(text="🗑 Talabani o'chirish"),
+            ],
             [types.KeyboardButton(text="📢 Xabar yollash")],
         ],
         resize_keyboard=True,
@@ -304,6 +308,7 @@ async def save_morning_time(message: types.Message, state: FSMContext):
 @dp.message(F.text == "➕ Admin qo'shish")
 async def add_admin_start(message: types.Message, state: FSMContext):
     if message.from_user.id != SUPER_ADMIN_ID:
+        await message.answer("⚠️ Faqat Super Admingina yangi admin qo'sha oladi.")
         return
     await message.answer("🆔 Yangi adminning Telegram ID raqamini yuboring:")
     await state.set_state(AdminStates.waiting_for_new_admin_id)
@@ -312,14 +317,71 @@ async def add_admin_start(message: types.Message, state: FSMContext):
 @dp.message(AdminStates.waiting_for_new_admin_id, F.text)
 async def save_new_admin(message: types.Message, state: FSMContext):
     try:
-        new_id = int(message.text)
+        new_id = int(message.text.strip())
         admins.add(new_id)
         await message.answer(
-            f"✅ {new_id} ID raqamli foydalanuvchi admin qilindi.",
+            f"✅ `{new_id}` ID raqamli foydalanuvchi admin qilindi.",
             reply_markup=get_admin_keyboard(),
+            parse_mode="Markdown",
         )
+        try:
+            await bot.send_message(
+                new_id,
+                "🎉 Siz yotoqxona davomat botiga **Admin** etib tayinlandingiz! /start bosing.",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
     except ValueError:
-        await message.answer("❌ Noto'g'ri raqam.")
+        await message.answer("❌ Noto'g'ri raqam format. Faqat raqam kiriting.")
+    await state.clear()
+
+
+@dp.message(F.text == "🗑 Adminni o'chirish")
+async def remove_admin_start(message: types.Message, state: FSMContext):
+    if message.from_user.id != SUPER_ADMIN_ID:
+        await message.answer("⚠️ Faqat Super Admingina adminlarni o'chira oladi.")
+        return
+    
+    admin_list = [f"🆔 `{a_id}`" + (" (Super Admin)" if a_id == SUPER_ADMIN_ID else "") for a_id in admins]
+    text = (
+        "🗑 **Hozirgi adminlar ro'yxati:**\n\n"
+        + "\n".join(admin_list)
+        + "\n\nO'chirib tashlash uchun adminning **Telegram ID** raqamini yuboring:"
+    )
+    await message.answer(text, parse_mode="Markdown")
+    await state.set_state(AdminStates.waiting_for_remove_admin_id)
+
+
+@dp.message(AdminStates.waiting_for_remove_admin_id, F.text)
+async def save_remove_admin(message: types.Message, state: FSMContext):
+    try:
+        target_id = int(message.text.strip())
+        
+        if target_id == SUPER_ADMIN_ID:
+            await message.answer("❌ Super Adminni o'chirib bo'lmaydi!")
+            return
+            
+        if target_id in admins:
+            admins.remove(target_id)
+            await message.answer(
+                f"✅ `{target_id}` ID raqamli admin huquqlaridan mahrum qilindi.",
+                reply_markup=get_admin_keyboard(),
+                parse_mode="Markdown",
+            )
+            try:
+                await bot.send_message(
+                    target_id, "❌ Siz yotoqxona davomat botida adminlik huquqidan ayrildingiz."
+                )
+            except Exception:
+                pass
+        else:
+            await message.answer("❌ Bunday ID raqamli admin topilmadi. Qaytadan urinib ko'ring:")
+            return
+    except ValueError:
+        await message.answer("❌ Noto'g'ri format. Faqat raqamli ID yuboring:")
+        return
+
     await state.clear()
 
 
@@ -334,11 +396,10 @@ async def add_student_start(message: types.Message, state: FSMContext):
 @dp.message(AdminStates.waiting_for_student_id, F.text)
 async def get_student_id(message: types.Message, state: FSMContext):
     try:
-        s_id = int(message.text)
+        s_id = int(message.text.strip())
         await state.update_data(student_id=s_id)
         await message.answer(
-            "✍️ Talabaning **Ism va Familiyasini** kiriting (masalan: Alisher"
-            " Valiyev):"
+            "✍️ Talabaning **Ism va Familiyasini** kiriting (masalan: Alisher Valiyev):"
         )
         await state.set_state(AdminStates.waiting_for_student_name)
     except ValueError:
@@ -401,8 +462,7 @@ async def get_student_phone(message: types.Message, state: FSMContext):
     try:
         await bot.send_message(
             s_id,
-            "🎉 Siz admin tomonidan yotoqxona davomat botiga ro'yxatdan"
-            " o'tkazildingiz! /start bosing.",
+            "🎉 Siz admin tomonidan yotoqxona davomat botiga ro'yxatdan o'tkazildingiz! /start bosing.",
         )
     except Exception:
         pass
@@ -453,8 +513,7 @@ async def save_remove_student(message: types.Message, state: FSMContext):
                 pass
         else:
             await message.answer(
-                "❌ Bunday ID raqamli talaba topilmadi. Qaytadan urinib ko'ring yoki"
-                " boshqa ID yuboring:"
+                "❌ Bunday ID raqamli talaba topilmadi. Qaytadan urinib ko'ring yoki boshqa ID yuboring:"
             )
             return
     except ValueError:
@@ -526,8 +585,7 @@ async def handle_location(message: types.Message):
             "time": current_time.strftime("%H:%M:%S"),
         }
         await message.answer(
-            f"✅ Davomatingiz qabul qilindi! Yotoqxona hududasiz ({int(distance)}"
-            " metr)."
+            f"✅ Davomatingiz qabul qilindi! Yotoqxona hududasiz ({int(distance)} metr)."
         )
     else:
         await message.answer(
@@ -564,9 +622,7 @@ async def handle_location(message: types.Message):
                     pass
 
             await message.answer(
-                "⚠️ **DIQQAT!** Belgilangan taqiqlangan vaqt oralig'ida yotoqxona"
-                " hududidan 150 metrdan ortiq masofaga chiqib ketganingiz qayd etildi"
-                " va administratorlarga xabar berildi!"
+                "⚠️ **DIQQAT!** Belgilangan taqiqlangan vaqt oralig'ida yotoqxona hududidan 150 metrdan ortiq masofaga chiqib ketganingiz qayd etildi va administratorlarga xabar berildi!"
             )
 
 
