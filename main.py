@@ -1,6 +1,5 @@
 import asyncio
 from datetime import datetime
-from math import atan2, cos, radians, sin, sqrt
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
@@ -10,8 +9,8 @@ from aiogram.fsm.state import State, StatesGroup
 TOKEN = "8946349098:AAFQKMlUCyl3pFcYC5EEnzDPxlYKKvHMe_8"
 SUPER_ADMIN_ID = 5874144878
 
-dorm_location = {"lat": 40.785500, "lon": 72.343100}
-ALLOWABLE_RADIUS = 150  # Metr
+# Hozirgi aktiv QR / Maxfiy so'z (Buni admin yangilab turadi)
+CURRENT_QR_CODE = "TTJ_DAVOMAT_2026_SESSION"  # Buni admin o'zgartirishi mumkin
 
 TIME_RULES = {
     "night_start_hour": 20,
@@ -30,27 +29,16 @@ registered_students = {}
 
 class AdminStates(StatesGroup):
     waiting_for_new_admin_id = State()
-    waiting_for_remove_admin_id = State()  # Adminni o'chirish uchun holat
+    waiting_for_remove_admin_id = State()
     waiting_for_student_id = State()
     waiting_for_student_name = State()
     waiting_for_student_course = State()
     waiting_for_student_phone = State()
     waiting_for_remove_student = State()
     waiting_for_broadcast = State()
-    waiting_for_dorm_location = State()
     waiting_for_night_time = State()
     waiting_for_morning_time = State()
-
-
-def calculate_distance(lat1, lon1, lat2, lon2):
-    R = 6371000
-    dlat = radians(lat2 - lat1)
-    dlon = radians(lon2 - lon1)
-    a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(
-        dlon / 2
-    ) ** 2
-    c = 2 * atan2(sqrt(a), sqrt(1 - a))
-    return R * c
+    waiting_for_new_qr_code = State()  # Yangi QR kod / so'z kiritish
 
 
 def get_admin_keyboard():
@@ -58,10 +46,10 @@ def get_admin_keyboard():
         keyboard=[
             [types.KeyboardButton(text="📊 Statistika va Panel")],
             [
-                types.KeyboardButton(text="✅ Lokatsiya yuborganlar"),
-                types.KeyboardButton(text="❌ Lokatsiya yubormaganlar"),
+                types.KeyboardButton(text="✅ Kelganlar"),
+                types.KeyboardButton(text="❌ Kelmaganlar"),
             ],
-            [types.KeyboardButton(text="📍 Yotoqxona manzilini o'zgartash")],
+            [types.KeyboardButton(text="📸 QR-kodni yangilash")],
             [
                 types.KeyboardButton(
                     text="🌙 Kechki vaqtni o'zgartirish (20:00)"
@@ -72,7 +60,7 @@ def get_admin_keyboard():
             ],
             [
                 types.KeyboardButton(text="➕ Admin qo'shish"),
-                types.KeyboardButton(text="🗑 Adminni o'chirish"),  # Yangi tugma
+                types.KeyboardButton(text="🗑 Adminni o'chirish"),
             ],
             [
                 types.KeyboardButton(text="👤 Talaba qo'shish"),
@@ -85,7 +73,8 @@ def get_admin_keyboard():
 
 
 @dp.message(Command("start"))
-async def cmd_start(message: types.Message):
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()
     user_id = message.from_user.id
 
     if user_id in admins:
@@ -110,16 +99,15 @@ async def cmd_start(message: types.Message):
         )
         return
 
+    # Talaba uchun menyu (QR kodni skaner qilib yuborish uchun)
     keyboard = types.ReplyKeyboardMarkup(
         keyboard=[[
-            types.KeyboardButton(
-                text="📍 Davomat uchun lokatsiya yuborish", request_location=True
-            )
+            types.KeyboardButton(text="📷 QR-kodni yuborish / Skaner qilish")
         ]],
         resize_keyboard=True,
     )
     await message.answer(
-        "Xush kelibsiz! Davomat belgilash uchun quyidagi tugmani bosing:",
+        "Xush kelibsiz! Davomat qilish uchun xonadagi **QR-kodni skaner qilib** rasmini yuboring yoki maxsus kodni kiriting:",
         reply_markup=keyboard,
     )
 
@@ -133,43 +121,65 @@ async def admin_panel(message: types.Message):
     not_sent_count = total_students - sent_count
 
     await message.answer(
-        f"📊 **Yotoqxona Davomat Statistikasi**\n\n"
-        f"👥 Jami botdagi talabalar: **{total_students} ta**\n"
-        f"✅ Lokatsiya yuborganlar: **{sent_count} ta**\n"
-        f"❌ Lokatsiya yubormaganlar: **{not_sent_count} ta**\n\n"
-        f"⏱ **Hozirgi vaqt qoidalari:**\n"
-        f"• Kechki taqiqlanish boshlanishi: `{TIME_RULES['night_start_hour']:02d}:{TIME_RULES['night_start_min']:02d}`\n"
-        f"• Ertalabki ruxsat tugashi: `{TIME_RULES['morning_end_hour']:02d}:{TIME_RULES['morning_end_min']:02d}`\n\n"
-        f"📍 Yotoqxona koordinatalari: `{dorm_location['lat']}, {dorm_location['lon']}`",
+        f"📊 **Yotoqxona Davomat Statistikasi (QR)**\n\n"
+        f"👥 Jami talabalar: **{total_students} ta**\n"
+        f"✅ Kelganlar: **{sent_count} ta**\n"
+        f"❌ Kelmaganlar: **{not_sent_count} ta**\n\n"
+        f"🔑 Hozirgi aktiv QR kaliti/so'zi: `{CURRENT_QR_CODE}`\n\n"
+        f"⏱ **Vaqt qoidalari:**\n"
+        f"• Kechki taqiq: `{TIME_RULES['night_start_hour']:02d}:{TIME_RULES['night_start_min']:02d}`\n"
+        f"• Ertalabki ruxsat: `{TIME_RULES['morning_end_hour']:02d}:{TIME_RULES['morning_end_min']:02d}`",
         parse_mode="Markdown",
     )
 
 
-@dp.message(F.text == "✅ Lokatsiya yuborganlar")
+@dp.message(F.text == "📸 QR-kodni yangilash")
+async def update_qr_start(message: types.Message, state: FSMContext):
+    if message.from_user.id not in admins:
+        return
+    await message.answer(
+        "📸 Yangi QR-kod matnini yoki uning maxfiy kalitini yuboring (Talabalar shu kodni kiritadi yoki skaner qiladi):",
+        parse_mode="Markdown",
+    )
+    await state.set_state(AdminStates.waiting_for_new_qr_code)
+
+
+@dp.message(AdminStates.waiting_for_new_qr_code, F.text)
+async def save_new_qr(message: types.Message, state: FSMContext):
+    global CURRENT_QR_CODE
+    CURRENT_QR_CODE = message.text.strip()
+    await message.answer(
+        f"✅ QR-kod kaliti muvaffaqiyatli yangilandi!\n🔑 Yangi kod: `{CURRENT_QR_CODE}`",
+        reply_markup=get_admin_keyboard(),
+        parse_mode="Markdown",
+    )
+    await state.clear()
+
+
+@dp.message(F.text == "✅ Kelganlar")
 async def check_present_students(message: types.Message):
     if message.from_user.id not in admins:
         return
     if not attendance_today:
-        await message.answer("⚠️ Hozircha hech kim lokatsiya yubormadi.")
+        await message.answer("⚠️ Hozircha hech kim davomat qilmadi.")
         return
 
     present_list = []
     for s_id, data in attendance_today.items():
         present_list.append(
-            f"👤 {data['name']} ({data.get('course', 'Nomaʼlum')} - kurs) | ⏰ Vaqt:"
+            f"👤 {data['name']} ({data.get('course', 'Nomaʼlum')}) | ⏰ Vaqt:"
             f" {data['time']} | 🆔 `{s_id}`"
         )
 
-    text = (
-        f"✅ **Lokatsiya yuborganlar ({len(attendance_today)} ta):**\n\n"
-        + "\n".join(present_list)
+    text = f"✅ **Kelganlar ({len(attendance_today)} ta):**\n\n" + "\n".join(
+        present_list
     )
     if len(text) > 4096:
         text = text[:4096]
     await message.answer(text, parse_mode="Markdown")
 
 
-@dp.message(F.text == "❌ Lokatsiya yubormaganlar")
+@dp.message(F.text == "❌ Kelmaganlar")
 async def check_absent_students(message: types.Message):
     if message.from_user.id not in admins:
         return
@@ -178,61 +188,88 @@ async def check_absent_students(message: types.Message):
     for s_id, data in registered_students.items():
         if s_id not in attendance_today:
             absent_list.append(
-                f"👤 {data['name']} ({data.get('course', 'Nomaʼlum')} - kurs) | 📞"
+                f"👤 {data['name']} ({data.get('course', 'Nomaʼlum')}) | 📞"
                 f" {data['phone']} | 🆔 `{s_id}`"
             )
 
     if not absent_list:
-        await message.answer("✅ Hamma ro'yxatdagi talabalar lokatsiya yuborgan!")
+        await message.answer("✅ Hamma ro'yxatdagi talabalar keldi!")
     else:
-        text = (
-            f"❌ **Lokatsiya yubormaganlar ({len(absent_list)} ta):**\n\n"
-            + "\n".join(absent_list)
+        text = f"❌ **Kelmaganlar ({len(absent_list)} ta):**\n\n" + "\n".join(
+            absent_list
         )
         if len(text) > 4096:
             text = text[:4096]
         await message.answer(text, parse_mode="Markdown")
 
 
-@dp.message(F.text == "📍 Yotoqxona manzilini o'zgartash")
-async def edit_dorm_location(message: types.Message, state: FSMContext):
-    if message.from_user.id not in admins:
+# Talaba QR kod tugmasini bosganda
+@dp.message(F.text == "📷 QR-kodni yuborish / Skaner qilish")
+async def scan_qr_prompt(message: types.Message):
+    if message.from_user.id in admins:
         return
-    keyboard = types.ReplyKeyboardMarkup(
-        keyboard=[[
-            types.KeyboardButton(
-                text="📍 Yotoqxona lokatsiyasini yuborish", request_location=True
-            )
-        ]],
-        resize_keyboard=True,
-    )
-    await message.answer(
-        "📍 Yotoqxonaning yangi joylashuvini yuborish uchun pastdagi tugmani bosing:",
-        reply_markup=keyboard,
-    )
-    await state.set_state(AdminStates.waiting_for_dorm_location)
-
-
-@dp.message(AdminStates.waiting_for_dorm_location, F.location)
-async def save_dorm_location(message: types.Message, state: FSMContext):
-    dorm_location["lat"] = message.location.latitude
-    dorm_location["lon"] = message.location.longitude
+    if message.from_user.id not in registered_students:
+        return
 
     await message.answer(
-        "✅ Yotoqxona manzili muvaffaqiyatli yangilandi!",
-        reply_markup=get_admin_keyboard(),
+        "📲 Xonadagi QR-kodni skaner qiling. Agar telefoningiz skaner qilmasa, admin bergan **maxfiy matnni** shu yerga yozib yuboring:"
     )
-    await state.clear()
 
 
+# Talaba matnli kod yoki QR matnini yuborganda tekshirish
+@dp.message(
+    F.text
+    & ~F.text.in_({
+        "📊 Statistika va Panel",
+        "✅ Kelganlar",
+        "❌ Kelmaganlar",
+        "📸 QR-kodni yangilash",
+        "➕ Admin qo'shish",
+        "🗑 Adminni o'chirish",
+        "👤 Talaba qo'shish",
+        "🗑 Talabani o'chirish",
+        "📢 Xabar yollash",
+    })
+)
+async def process_qr_text(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    if user_id in admins or user_id not in registered_students:
+        return
+
+    # Agar biron FSM holatida bo'lmasa va oddiy matn yuborsa (demak QR kod matni yoki paroli)
+    current_state = await state.get_state()
+    if current_state is not None:
+        return  # Boshqa holatda bo'lsa aralashmaymiz
+
+    sent_text = message.text.strip()
+
+    if sent_text == CURRENT_QR_CODE:
+        student_data = registered_students[user_id]
+        current_time = datetime.now()
+
+        attendance_today[user_id] = {
+            "name": student_data["name"],
+            "course": student_data.get("course", "Nomaʼlum"),
+            "time": current_time.strftime("%H:%M:%S"),
+        }
+        await message.answer(
+            "✅ **Davomatingiz muvaffaqiyatli qabul qilindi!** Xush kelibsiz.",
+            parse_mode="Markdown",
+        )
+    else:
+        await message.answer(
+            "❌ **Xato QR-kod!** Iltimos, xonadagi to'g'ri QR-kodni skaner qiling yoki admin bergan oxirgi kodni kiriting.",
+            parse_mode="Markdown",
+        )
+
+
+# Vaqtlarni o'zgartirish handlerlari
 @dp.message(F.text == "🌙 Kechki vaqtni o'zgartirish (20:00)")
 async def edit_night_time_start(message: types.Message, state: FSMContext):
     if message.from_user.id not in admins:
         return
     await message.answer(
-        "🌙 Kechki taqiqlanish boshlanadigan yangi vaqtni kiriting (Masalan:"
-        " `20:00`):",
-        parse_mode="Markdown",
+        "🌙 Kechki vaqtni kiriting (Masalan: `20:00`):", parse_mode="Markdown"
     )
     await state.set_state(AdminStates.waiting_for_night_time)
 
@@ -241,28 +278,18 @@ async def edit_night_time_start(message: types.Message, state: FSMContext):
 async def save_night_time(message: types.Message, state: FSMContext):
     try:
         parts = message.text.strip().split(":")
-        hour = int(parts[0])
-        minute = int(parts[1]) if len(parts) > 1 else 0
-
-        if not (0 <= hour <= 23 and 0 <= minute <= 59):
-            raise ValueError()
-
-        TIME_RULES["night_start_hour"] = hour
-        TIME_RULES["night_start_min"] = minute
-
+        hour, minute = int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
+        TIME_RULES["night_start_hour"], TIME_RULES["night_start_min"] = (
+            hour,
+            minute,
+        )
         await message.answer(
-            f"✅ Kechki vaqt muvaffaqiyatli `{hour:02d}:{minute:02d}` etib"
-            " o'zgartirildi!",
+            f"✅ Kechki vaqt `{hour:02d}:{minute:02d}` etib o'zgartirildi!",
             reply_markup=get_admin_keyboard(),
-            parse_mode="Markdown",
         )
         await state.clear()
     except ValueError:
-        await message.answer(
-            "❌ Noto'g'ri format. Iltimos, `HH:MM` ko'rinishida yuboring (masalan,"
-            " `20:00`):",
-            parse_mode="Markdown",
-        )
+        await message.answer("❌ Noto'g'ri format. `HH:MM` ko'rinishida yuboring:")
 
 
 @dp.message(F.text == "🌅 Ertalabki vaqtni o'zgartirish (05:00)")
@@ -270,9 +297,7 @@ async def edit_morning_time_start(message: types.Message, state: FSMContext):
     if message.from_user.id not in admins:
         return
     await message.answer(
-        "🌅 Ertalabki ruxsat tugaydigan yangi vaqtni kiriting (Masalan:"
-        " `05:00`):",
-        parse_mode="Markdown",
+        "🌅 Ertalabki vaqtni kiriting (Masalan: `05:00`):", parse_mode="Markdown"
     )
     await state.set_state(AdminStates.waiting_for_morning_time)
 
@@ -281,34 +306,23 @@ async def edit_morning_time_start(message: types.Message, state: FSMContext):
 async def save_morning_time(message: types.Message, state: FSMContext):
     try:
         parts = message.text.strip().split(":")
-        hour = int(parts[0])
-        minute = int(parts[1]) if len(parts) > 1 else 0
-
-        if not (0 <= hour <= 23 and 0 <= minute <= 59):
-            raise ValueError()
-
-        TIME_RULES["morning_end_hour"] = hour
-        TIME_RULES["morning_end_min"] = minute
-
+        hour, minute = int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
+        TIME_RULES["morning_end_hour"], TIME_RULES["morning_end_min"] = (
+            hour,
+            minute,
+        )
         await message.answer(
-            f"✅ Ertalabki vaqt muvaffaqiyatli `{hour:02d}:{minute:02d}` etib"
-            " o'zgartirildi!",
+            f"✅ Ertalabki vaqt `{hour:02d}:{minute:02d}` etib o'zgartirildi!",
             reply_markup=get_admin_keyboard(),
-            parse_mode="Markdown",
         )
         await state.clear()
     except ValueError:
-        await message.answer(
-            "❌ Noto'g'ri format. Iltimos, `HH:MM` ko'rinishida yuboring (masalan,"
-            " `05:00`):",
-            parse_mode="Markdown",
-        )
+        await message.answer("❌ Noto'g'ri format. `HH:MM` ko'rinishida yuboring:")
 
 
 @dp.message(F.text == "➕ Admin qo'shish")
 async def add_admin_start(message: types.Message, state: FSMContext):
     if message.from_user.id != SUPER_ADMIN_ID:
-        await message.answer("⚠️ Faqat Super Admingina yangi admin qo'sha oladi.")
         return
     await message.answer("🆔 Yangi adminning Telegram ID raqamini yuboring:")
     await state.set_state(AdminStates.waiting_for_new_admin_id)
@@ -320,34 +334,23 @@ async def save_new_admin(message: types.Message, state: FSMContext):
         new_id = int(message.text.strip())
         admins.add(new_id)
         await message.answer(
-            f"✅ `{new_id}` ID raqamli foydalanuvchi admin qilindi.",
+            f"✅ `{new_id}` admin qilindi.",
             reply_markup=get_admin_keyboard(),
             parse_mode="Markdown",
         )
-        try:
-            await bot.send_message(
-                new_id,
-                "🎉 Siz yotoqxona davomat botiga **Admin** etib tayinlandingiz! /start bosing.",
-                parse_mode="Markdown",
-            )
-        except Exception:
-            pass
+        await state.clear()
     except ValueError:
-        await message.answer("❌ Noto'g'ri raqam format. Faqat raqam kiriting.")
-    await state.clear()
+        await message.answer("❌ Faqat raqam kiriting.")
 
 
 @dp.message(F.text == "🗑 Adminni o'chirish")
 async def remove_admin_start(message: types.Message, state: FSMContext):
     if message.from_user.id != SUPER_ADMIN_ID:
-        await message.answer("⚠️ Faqat Super Admingina adminlarni o'chira oladi.")
         return
-    
-    admin_list = [f"🆔 `{a_id}`" + (" (Super Admin)" if a_id == SUPER_ADMIN_ID else "") for a_id in admins]
     text = (
-        "🗑 **Hozirgi adminlar ro'yxati:**\n\n"
-        + "\n".join(admin_list)
-        + "\n\nO'chirib tashlash uchun adminning **Telegram ID** raqamini yuboring:"
+        "🗑 **Adminlar:**\n"
+        + "\n".join([str(a) for a in admins])
+        + "\n\nO'chirish uchun ID yuboring:"
     )
     await message.answer(text, parse_mode="Markdown")
     await state.set_state(AdminStates.waiting_for_remove_admin_id)
@@ -357,32 +360,17 @@ async def remove_admin_start(message: types.Message, state: FSMContext):
 async def save_remove_admin(message: types.Message, state: FSMContext):
     try:
         target_id = int(message.text.strip())
-        
         if target_id == SUPER_ADMIN_ID:
             await message.answer("❌ Super Adminni o'chirib bo'lmaydi!")
             return
-            
         if target_id in admins:
             admins.remove(target_id)
             await message.answer(
-                f"✅ `{target_id}` ID raqamli admin huquqlaridan mahrum qilindi.",
-                reply_markup=get_admin_keyboard(),
-                parse_mode="Markdown",
+                "✅ Admin o'chirildi.", reply_markup=get_admin_keyboard()
             )
-            try:
-                await bot.send_message(
-                    target_id, "❌ Siz yotoqxona davomat botida adminlik huquqidan ayrildingiz."
-                )
-            except Exception:
-                pass
-        else:
-            await message.answer("❌ Bunday ID raqamli admin topilmadi. Qaytadan urinib ko'ring:")
-            return
+        await state.clear()
     except ValueError:
-        await message.answer("❌ Noto'g'ri format. Faqat raqamli ID yuboring:")
-        return
-
-    await state.clear()
+        await message.answer("❌ Faqat raqam yuboring:")
 
 
 @dp.message(F.text == "👤 Talaba qo'shish")
@@ -396,77 +384,39 @@ async def add_student_start(message: types.Message, state: FSMContext):
 @dp.message(AdminStates.waiting_for_student_id, F.text)
 async def get_student_id(message: types.Message, state: FSMContext):
     try:
-        s_id = int(message.text.strip())
-        await state.update_data(student_id=s_id)
-        await message.answer(
-            "✍️ Talabaning **Ism va Familiyasini** kiriting (masalan: Alisher Valiyev):"
-        )
+        await state.update_data(student_id=int(message.text.strip()))
+        await message.answer("✍️ Talabaning Ism va Familiyasini kiriting:")
         await state.set_state(AdminStates.waiting_for_student_name)
     except ValueError:
-        await message.answer("❌ Noto'g'ri ID format. Faqat raqam kiriting.")
+        await message.answer("❌ Faqat raqamli ID kiriting.")
 
 
 @dp.message(AdminStates.waiting_for_student_name, F.text)
 async def get_student_name(message: types.Message, state: FSMContext):
     await state.update_data(student_name=message.text)
-
-    keyboard = types.ReplyKeyboardMarkup(
-        keyboard=[
-            [types.KeyboardButton(text="1-kurs"), types.KeyboardButton(text="2-kurs")],
-            [types.KeyboardButton(text="3-kurs"), types.KeyboardButton(text="4-kurs")]
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=True
-    )
-    await message.answer(
-        "🎓 Talabaning **nechanchi bosqich (kurs)** talabasi ekanini tanlang yoki yozib yuboring:",
-        reply_markup=keyboard
-    )
+    await message.answer("🎓 Talabaning kursini kiriting (masalan: 1-kurs):")
     await state.set_state(AdminStates.waiting_for_student_course)
 
 
 @dp.message(AdminStates.waiting_for_student_course, F.text)
 async def get_student_course(message: types.Message, state: FSMContext):
     await state.update_data(student_course=message.text.strip())
-    await message.answer(
-        "📞 Talabaning **Telefon raqamini** kiriting (masalan: +998901234567):",
-        reply_markup=types.ReplyKeyboardRemove()
-    )
+    await message.answer("📞 Talabaning telefon raqamini kiriting:")
     await state.set_state(AdminStates.waiting_for_student_phone)
 
 
 @dp.message(AdminStates.waiting_for_student_phone, F.text)
 async def get_student_phone(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    s_id = data["student_id"]
-    s_name = data["student_name"]
-    s_course = data["student_course"]
-    s_phone = message.text
-
-    registered_students[s_id] = {
-        "name": s_name,
-        "course": s_course,
-        "phone": s_phone,
+    registered_students[data["student_id"]] = {
+        "name": data["student_name"],
+        "course": data["student_course"],
+        "phone": message.text,
     }
-
     await message.answer(
-        f"✅ Talaba muvaffaqiyatli ro'yxatdan o'tkazildi!\n\n"
-        f"👤 Ism: {s_name}\n"
-        f"🎓 Kurs: {s_course}\n"
-        f"📞 Tel: {s_phone}\n"
-        f"🆔 ID: `{s_id}`",
+        "✅ Talaba muvaffaqiyatli qo'shildi!",
         reply_markup=get_admin_keyboard(),
-        parse_mode="Markdown",
     )
-
-    try:
-        await bot.send_message(
-            s_id,
-            "🎉 Siz admin tomonidan yotoqxona davomat botiga ro'yxatdan o'tkazildingiz! /start bosing.",
-        )
-    except Exception:
-        pass
-
     await state.clear()
 
 
@@ -474,21 +424,9 @@ async def get_student_phone(message: types.Message, state: FSMContext):
 async def remove_student_start(message: types.Message, state: FSMContext):
     if message.from_user.id not in admins:
         return
-    if not registered_students:
-        await message.answer("⚠️ Hozircha ro'yxatda talabalar yo'q.")
-        return
-
-    student_list = []
-    for s_id, data in registered_students.items():
-        student_list.append(
-            f"👤 {data['name']} ({data.get('course', 'Nomaʼlum')}) — 🆔 `{s_id}`"
-        )
-
-    text = (
-        "🗑 **Ro'yxatdan chiqarib tashlash uchun talabaning ID raqamini yuboring:**\n\n"
-        + "\n".join(student_list)
+    await message.answer(
+        "🗑 O'chirish uchun talabaning ID raqamini yuboring:"
     )
-    await message.answer(text, parse_mode="Markdown")
     await state.set_state(AdminStates.waiting_for_remove_student)
 
 
@@ -497,39 +435,25 @@ async def save_remove_student(message: types.Message, state: FSMContext):
     try:
         s_id = int(message.text.strip())
         if s_id in registered_students:
-            removed_data = registered_students.pop(s_id)
+            registered_students.pop(s_id)
             if s_id in attendance_today:
                 attendance_today.pop(s_id)
-
             await message.answer(
-                f"✅ {removed_data['name']} muvaffaqiyatli ro'yxatdan chiqarib yuborildi!",
-                reply_markup=get_admin_keyboard(),
+                "✅ Talaba o'chirildi.", reply_markup=get_admin_keyboard()
             )
-            try:
-                await bot.send_message(
-                    s_id, "❌ Siz yotoqxona davomat botidan chiqarib yuborildingiz."
-                )
-            except Exception:
-                pass
         else:
-            await message.answer(
-                "❌ Bunday ID raqamli talaba topilmadi. Qaytadan urinib ko'ring yoki boshqa ID yuboring:"
-            )
+            await message.answer("❌ Topilmadi. Qaytadan ID yuboring:")
             return
+        await state.clear()
     except ValueError:
-        await message.answer(
-            "❌ Noto'g'ri format. Iltimos, faqat talabaning raqamli ID'sini yuboring:"
-        )
-        return
-
-    await state.clear()
+        await message.answer("❌ Faqat raqam yuboring:")
 
 
 @dp.message(F.text == "📢 Xabar yollash")
 async def broadcast_start(message: types.Message, state: FSMContext):
     if message.from_user.id not in admins:
         return
-    await message.answer("📢 Talabalarga yuboriladigan xatni yozing:")
+    await message.answer("📢 E'lon matnini yozing:")
     await state.set_state(AdminStates.waiting_for_broadcast)
 
 
@@ -541,89 +465,9 @@ async def send_broadcast(message: types.Message, state: FSMContext):
         except Exception:
             pass
     await message.answer(
-        "✅ Xabar barcha talabalarga yuborildi!",
-        reply_markup=get_admin_keyboard(),
+        "✅ Xabar yuborildi!", reply_markup=get_admin_keyboard()
     )
     await state.clear()
-
-
-@dp.message(F.location)
-async def handle_location(message: types.Message):
-    user_id = message.from_user.id
-    if user_id in admins:
-        return
-
-    if user_id not in registered_students:
-        await message.answer("❌ Siz ro'yxatdan o'tmagansiz!")
-        return
-
-    user_lat = message.location.latitude
-    user_lon = message.location.longitude
-
-    distance = calculate_distance(
-        user_lat, user_lon, dorm_location["lat"], dorm_location["lon"]
-    )
-    student_data = registered_students[user_id]
-    student_name = student_data["name"]
-    student_course = student_data.get("course", "Nomaʼlum")
-    student_phone = student_data["phone"]
-
-    current_time = datetime.now()
-    current_total_minutes = current_time.hour * 60 + current_time.minute
-
-    night_minutes = (
-        TIME_RULES["night_start_hour"] * 60 + TIME_RULES["night_start_min"]
-    )
-    morning_minutes = (
-        TIME_RULES["morning_end_hour"] * 60 + TIME_RULES["morning_end_min"]
-    )
-
-    if distance <= ALLOWABLE_RADIUS:
-        attendance_today[user_id] = {
-            "name": student_name,
-            "course": student_course,
-            "time": current_time.strftime("%H:%M:%S"),
-        }
-        await message.answer(
-            f"✅ Davomatingiz qabul qilindi! Yotoqxona hududasiz ({int(distance)} metr)."
-        )
-    else:
-        await message.answer(
-            f"❌ **Diqqat! Siz yotoqxona hududidan tashqaridasiz!**\n\n"
-            f"📍 Yotoqxonagacha bo'lgan masofa: {int(distance)} metr.\n"
-            f"⚠️ Ruxsat etilgan radius: {ALLOWABLE_RADIUS} metrdan oshmasligi kerak.",
-            parse_mode="Markdown",
-        )
-
-        is_restricted_time = False
-        if night_minutes > morning_minutes:
-            if (
-                current_total_minutes >= night_minutes
-                or current_total_minutes < morning_minutes
-            ):
-                is_restricted_time = True
-        else:
-            if morning_minutes <= current_total_minutes < night_minutes:
-                is_restricted_time = True
-
-        if is_restricted_time:
-            alert_text = (
-                f"🚨 **RUXSAT ETILMAGAN VAQTda CHIQISH!**\n\n"
-                f"👤 Talaba: {student_name} ({student_course})\n"
-                f"📞 Tel: {student_phone}\n"
-                f"🆔 ID: `{user_id}`\n"
-                f"📍 Masofa: {int(distance)} metr\n"
-                f"⏰ Vaqt: {current_time.strftime('%H:%M:%S')}"
-            )
-            for admin_id in admins:
-                try:
-                    await bot.send_message(admin_id, alert_text, parse_mode="Markdown")
-                except Exception:
-                    pass
-
-            await message.answer(
-                "⚠️ **DIQQAT!** Belgilangan taqiqlangan vaqt oralig'ida yotoqxona hududidan 150 metrdan ortiq masofaga chiqib ketganingiz qayd etildi va administratorlarga xabar berildi!"
-            )
 
 
 async def handle_ping(request):
